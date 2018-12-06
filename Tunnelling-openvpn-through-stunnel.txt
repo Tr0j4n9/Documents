@@ -1,0 +1,61 @@
+Continuing my string of posts on trying to get OpenVPN working through China’s Great Firewall… and a recent (and unexpected but much appreciated) report that TCP & UDP ports are blocked quickly, I’m now looking at getting OpenVPN to work with stunnel.
+
+My assumption is that the GFW is detecting the OpenVPN packets, since they’re not pure SSL, and then blocking the IP & port combination. (Yay for packet inspection.) So, right now, I’m thinking use stunnel to wrap the OpenVPN packets in a pure SSL connection. Of course, performance is going to suffer, since we’re now triple layering TCP (first layer: stunnel, second layer: OpenVPN, third layer: the actual web browsing).
+
+But that’s enough theory, onwards to the setup:
+
+The first thing to do was to get stunnel on both my server and laptop. Server was easy – since I’m using Fedora, it was simply yum install stunnel, and it was done. Laptop was a tad more difficult – I had to get the Windows version from the stunnel site, and then install it. (My friend’s laptop is going to be a bit harder, since it’s running OS X, but rudix has a stunnel package, so I’m hoping it’s easier than having to install the Mac OS X dev tools and having to compile the stunnel code.)
+
+Next, I setup stunnel on the server side:
+
+1. Get the certificates setup
+Stunnel runs everything over SSL. SSL requires certificates. We don’t have certificates. Therefore, we have to create them:
+openssl req -new -x509 -days 3650 -nodes -out /etc/stunnel/stunnel.pem -keyout /etc/stunnel/stunnel.pem
+
+This dumps the newly generated cert into the /etc/stunnel directory, where we’ll…
+
+2. Create the conf files
+For some strange strange reason, Fedora doesn’t come with a set of default config files. I have no clue why. So I had to create a barebones conf file:
+
+cert = /etc/stunnel/stunnel.pem
+pid = /var/run/stunnel.pid
+output = /var/log/stunnel
+
+[openvpn]
+accept=4948
+connect=ip.add.re.ss:1337
+The important thing to note here is that the IP address of the OpenVPN server needs to be specified – OpenVPN listens on a specific IP address. (YOu can verify this by looking at the output of netstat -nlp|grep openvpn). I tried using 127.0.0.1, but the OpenVPN client kept on failing to connect.
+
+Regarding the choice of port number, I ‘randomly’ chose the port number from another tutorial about installing stunnel on CentOS. In theory, we should be running this on port 443 since (I’m hoping) the GFW expects SSL over that port. But with this primarily being a test, the next step was to:
+
+3. Poke a hole in the firewall for stunnel
+Again, it was pretty simple, given that I’ve had to mess around with iptables a lot in the past few days: iptables -A INPUT -p tcp --dport 4948 -j ACCEPT was enough to get a single port punched through. (Again, replace the dport with the correct port, whatever you’re using.)
+
+4. Make stunnel start on boot
+Again, stunnel is weird and doesn’t come with an init or systemd script. So the easy way around this is just to add a single line to the crontab. It should be possible to do this as a normal user (since we’re not touching the first 1024 ports, Linux should allow it), but I just did it in root’s crontab – start editing it with crontab -e, and add:
+
+@reboot stunnel /etc/stunnel/stunnel.conf
+That’s it for the server. Next, we look at the client:
+
+stunnel on Windows is a bit of a strange beast. By default it comes with two config files – one named stunnel.conf, and the other named stunnel.cnf. However, poking at the files revealed that stunnel.cnf was simply used to generate a certificate during the install. Which we didn’t actually need, since we’re running in client mode. The upside is that we now only need to bother with one file: stunnel.conf
+
+The easiest way to get at the config file is to find stunnel in your Start menu, right click on the “Edit stunnel.conf” link and select “Run as administrator”.
+
+stunnel nicely installs a set of useful shortcuts in its start menu folder
+stunnel nicely installs a set of useful shortcuts in its start menu folder
+
+I only had to add 4 lines:
+
+[openvpn]
+client = yes
+accept = 127.0.0.1:31337
+connect = ip.add.re.ss:4948
+And that was all that was needed to be done to get stunnel configured. However, OpenVPN needs to be configured to use the new port. Thankfully, this just means that all the connection profiles with random ports that I created can be replaced with a single line: remote localhost 31337.  (Assuming that you’re using OpenVPN over TCP instead of UDP.)
+
+And that’s that.
+
+===
+
+Because this is more a trial run than anything else, I didn’t do much optimization and securing. However, two documents popped up in my Google searches but were not immediately useful: this, while being aimed at Debian users, has some interesting stuff on optimization (particularly the TCP_NODELAY options that look useful), and this, which has a bunch of stuff on using client certificates for authentication – something which is good to prevent MitM attacks (which might be used), so I’ll be looking into getting that running sometime later.
+
+Source: http://kyl191.net/2012/12/tunneling-openvpn-through-stunnel/
